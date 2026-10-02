@@ -45,6 +45,12 @@ uvicorn server:app --reload --port 8001
 # Then POST http://127.0.0.1:8001/chat
 ```
 
+On Windows, `powershell -ExecutionPolicy Bypass -File .\start.ps1` starts the chat server on port 8001. The sibling `livkit/start.ps1` launcher also starts it automatically when `noor-adk/.venv` exists.
+
+Configure `GOOGLE_API_KEY`, `GEMINI_MODEL`, `FIREBASE_PROJECT_ID`, and `GOOGLE_APPLICATION_CREDENTIALS` in your local `.env`. Use the same Firebase project and Firestore database as the voice backend. The frontend uses `NEXT_PUBLIC_ADK_URL=http://127.0.0.1:8001` and sends the signed-in patient's Firebase token. For another frontend origin, set `FRONTEND_ORIGINS` to a comma-separated list in the chat server's `.env`.
+
+Environment files and credentials are excluded from Git. Settings load from this repository's `.env` regardless of the working directory.
+
 ## What It Can Do
 
 | Feature | Status |

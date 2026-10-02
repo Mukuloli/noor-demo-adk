@@ -1,10 +1,16 @@
 """Settings loaded from .env"""
+from pathlib import Path
+
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / '.env', override=True)
 
 
 class Settings(BaseSettings):
     google_api_key: str = ''
-    gemini_model: str = 'gemini-2.5-flash'
+    gemini_model: str = 'gemini-3.8-flash'
     firebase_project_id: str = ''
     google_application_credentials: str = ''
     firestore_database_id: str = '(default)'
@@ -14,10 +20,11 @@ class Settings(BaseSettings):
     doctor_name: str = 'Clinic team'
     doctor_specialty: str = 'General Dentistry'
     doctor_services: str = 'checkup,cleaning,whitening'
+    frontend_origins: str = 'http://localhost:3000,http://127.0.0.1:3000'
     test_patient_uid: str = 'test-patient-001'
     test_patient_name: str = 'Test Patient'
 
-    model_config = {'env_file': '.env', 'extra': 'ignore'}
+    model_config = {'env_file': BASE_DIR / '.env', 'extra': 'ignore'}
 
 
 settings = Settings()
