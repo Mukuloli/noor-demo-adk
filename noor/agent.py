@@ -1,0 +1,128 @@
+"""Google ADK dental booking agent — tools wired to Firestore DB."""
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from google.adk.agents import LlmAgent
+from google.adk.tools import FunctionTool
+
+from .config import settings
+from . import db as firestore_db
+
+INSTRUCTIONS = """You are Noor, a friendly dental appointment assistant.
+Help the user book, view, reschedule or cancel appointments via text chat.
+Speak in the user's language — English, Hindi, or Hinglish is fine.
+
+Rules:
+- Call get_context first to know today's date/time.
+- Call get_doctors to know available doctors.
+- Call check_availability with doctor_id and date before suggesting any slot.
+- For booking: ask for client_name and phone_number. Do NOT ask for email.
+- Call prepare_booking with name, phone, doctor_id and a slot's 'start' value.
+- After prepare_booking succeeds: read back name, phone, date, time. Ask for confirmation.
+- Call confirm_booking ONLY after user says yes/haan/confirm/okay.
+- Call release_hold if user says no/nahi/cancel.
+- For viewing appointments: call get_appointments.
+- For cancellation: call get_appointments → prepare_cancellation → confirm_booking.
+- Never make up slots or IDs — only use values returned by tools.
+- Be brief and friendly.
+"""
+
+# In-memory session state (hold_id, stage) per session_id
+_session_state: dict[str, dict] = {}
+
+
+def build_agent(uid: str, session_id: str) -> LlmAgent:
+    """Build a fresh LlmAgent with tools bound to this user/session."""
+
+    def get_context() -> dict:
+        """Get today's clinic date and time."""
+        tz = ZoneInfo(settings.clinic_timezone)
+        return {
+            'clinic_time': datetime.now(tz).isoformat(),
+            'timezone': settings.clinic_timezone,
+        }
+
+    def get_doctors() -> dict:
+        """List available clinic doctors."""
+        doctors = firestore_db.get_doctors()
+        return {'ok': True, 'doctors': doctors, 'message': 'Available doctors.'}
+
+    def get_appointments() -> dict:
+        """Get the patient's upcoming confirmed appointments."""
+        appts = firestore_db.get_appointments(uid)
+        return {'ok': True, 'appointments': appts,
+                'message': f'Found {len(appts)} upcoming appointment(s).'}
+
+    def check_availability(doctor_id: str, date: str) -> dict:
+        """Check free slots for a doctor on a date (YYYY-MM-DD)."""
+        slots = firestore_db.check_availability(doctor_id, date)
+        if not slots:
+            return {'ok': True, 'slots': [], 'message': 'No available slots on this date.'}
+        return {'ok': True, 'slots': slots,
+                'message': f'Found {len(slots)} available slot(s).'}
+
+    def prepare_booking(doctor_id: str, start: str, client_name: str,
+                        phone_number: str, reason: str = 'Appointment',
+                        client_email: str = '') -> dict:
+        """Hold a slot. Returns a summary for the patient to confirm."""
+        result = firestore_db.prepare_booking(
+            uid=uid, session_id=session_id, doctor_id=doctor_id,
+            start=start, client_name=client_name, phone_number=phone_number,
+            reason=reason, client_email=client_email,
+        )
+        if result.get('ok') and result.get('hold_id'):
+            _session_state[session_id] = {
+                'stage': 'confirmation',
+                'hold_id': result['hold_id'],
+            }
+        return result
+
+    def confirm_booking() -> dict:
+        """Confirm the pending booking or cancellation after patient says yes."""
+        state = _session_state.get(session_id, {})
+        if state.get('stage') == 'confirmation':
+            result = firestore_db.confirm_booking(uid, session_id, state['hold_id'])
+            if result.get('ok'):
+                _session_state.pop(session_id, None)
+            return result
+        elif state.get('stage') == 'cancel_confirmation':
+            result = firestore_db.cancel_appointment(uid, state['appointment_id'])
+            if result.get('ok'):
+                _session_state.pop(session_id, None)
+            return result
+        return {'ok': False, 'message': 'Nothing pending to confirm. Please prepare a booking first.'}
+
+    def release_hold() -> dict:
+        """Release the held slot when patient says no."""
+        result = firestore_db.release_hold(uid, session_id)
+        _session_state.pop(session_id, None)
+        return result
+
+    def prepare_cancellation(appointment_id: str) -> dict:
+        """Prepare cancellation of a given appointment by ID."""
+        appts = firestore_db.get_appointments(uid)
+        target = next((a for a in appts if a['id'] == appointment_id), None)
+        if not target:
+            return {'ok': False, 'message': 'Appointment not found.'}
+        _session_state[session_id] = {
+            'stage': 'cancel_confirmation',
+            'appointment_id': appointment_id,
+        }
+        return {'ok': True, 'appointment': target,
+                'message': f"Cancel appointment on {target['start'][:10]} for {target['client_name']}? (yes/no)"}
+
+    return LlmAgent(
+        name='noor',
+        model=settings.gemini_model,
+        instruction=INSTRUCTIONS,
+        tools=[
+            FunctionTool(get_context),
+            FunctionTool(get_doctors),
+            FunctionTool(get_appointments),
+            FunctionTool(check_availability),
+            FunctionTool(prepare_booking),
+            FunctionTool(confirm_booking),
+            FunctionTool(release_hold),
+            FunctionTool(prepare_cancellation),
+        ],
+    )
