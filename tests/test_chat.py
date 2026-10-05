@@ -1,3 +1,4 @@
+import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -88,6 +89,25 @@ class ChatTests(unittest.TestCase):
             'Access-Control-Request-Headers': 'authorization,content-type'})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers['access-control-allow-origin'], 'http://localhost:3000')
+
+    def test_stream_creates_session_and_returns_final_reply(self):
+        response = self.client.post('/chat/stream', headers={'Authorization': 'Bearer alice'},
+                                    json={'session_id': 'stream-session', 'message': 'Hello'})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('text/event-stream', response.headers['content-type'])
+        events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
+        self.assertEqual(events[0], {'text': 'Hello from Noor', 'done': True})
+        self.assertEqual(FakeRunner.calls, [('alice', 'alice-stream-session', 'Hello')])
+
+    def test_stream_reports_provider_errors(self):
+        async def failing_runner(*args, **kwargs):
+            raise RuntimeError('provider credential details')
+            yield
+        with patch.object(FakeRunner, 'run_async', failing_runner), self.assertLogs(server.logger, level='ERROR'):
+            response = self.client.post('/chat/stream', headers={'Authorization': 'Bearer alice'},
+                                        json={'session_id': 'stream-session', 'message': 'Hello'})
+        self.assertIn('Noor could not respond right now.', response.text)
+        self.assertNotIn('credential', response.text)
 
 
 if __name__ == '__main__':

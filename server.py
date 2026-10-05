@@ -1,11 +1,13 @@
 """FastAPI server for ADK chat — connects to frontend via Firebase auth."""
+import json
 import logging
 import uuid
 
-import firebase_admin
-from firebase_admin import credentials, auth as firebase_auth
+from firebase_admin import auth as firebase_auth
+from noor_database.firestore.client import get_firebase_app
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from google.adk.runners import Runner
@@ -39,11 +41,7 @@ def verify_token(authorization: str) -> dict:
         raise HTTPException(401, 'Missing or invalid Authorization header.')
     token = authorization.split(' ', 1)[1]
     try:
-        if not firebase_admin._apps:
-            cred = (credentials.Certificate(settings.google_application_credentials)
-                    if settings.google_application_credentials else credentials.ApplicationDefault())
-            firebase_admin.initialize_app(cred, {'projectId': settings.firebase_project_id})
-        return firebase_auth.verify_id_token(token)
+        return firebase_auth.verify_id_token(token, app=get_firebase_app(settings))
     except Exception as exc:
         raise HTTPException(401, 'Your sign-in has expired. Please sign in again.') from exc
 
@@ -60,6 +58,20 @@ class ChatResponse(BaseModel):
     session_id: str
 
 
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+async def _ensure_session(uid: str, session_id: str):
+    """Ensure ADK session exists (carries conversation history)."""
+    adk_session_id = f'{uid}-{session_id}'
+    session = await _session_service.get_session(
+        app_name=APP_NAME, user_id=uid, session_id=adk_session_id
+    )
+    if session is None:
+        await _session_service.create_session(
+            app_name=APP_NAME, user_id=uid, session_id=adk_session_id
+        )
+    return adk_session_id
+
+
 # ─── Routes ───────────────────────────────────────────────────────────────────
 @app.get('/health')
 def health():
@@ -73,22 +85,13 @@ def health():
 
 @app.post('/chat', response_model=ChatResponse)
 async def chat(body: ChatRequest, authorization: str = Header(default='')):
-    """Chat with Noor. Requires Firebase Bearer token from frontend."""
+    """Chat with Noor (non-streaming fallback). Requires Firebase Bearer token."""
     claims = verify_token(authorization)
     uid = claims['uid']
     if not settings.google_api_key:
         raise HTTPException(503, 'Chat is not configured yet. Please try again later.')
 
-    # Ensure ADK session exists (carries conversation history)
-    adk_session_id = f'{uid}-{body.session_id}'
-    session = await _session_service.get_session(
-        app_name=APP_NAME, user_id=uid, session_id=adk_session_id
-    )
-    if session is None:
-        await _session_service.create_session(
-            app_name=APP_NAME, user_id=uid, session_id=adk_session_id
-        )
-
+    adk_session_id = await _ensure_session(uid, body.session_id)
     agent = build_agent(uid=uid, session_id=adk_session_id)
     runner = Runner(agent=agent, app_name=APP_NAME, session_service=_session_service)
 
@@ -116,3 +119,41 @@ async def chat(body: ChatRequest, authorization: str = Header(default='')):
         reply=' '.join(reply_parts).strip() or "I couldn't process that. Please try again.",
         session_id=body.session_id,
     )
+
+
+@app.post('/chat/stream')
+async def chat_stream(body: ChatRequest, authorization: str = Header(default='')):
+    """Chat with Noor via SSE streaming. Text chunks arrive as they are generated."""
+    claims = verify_token(authorization)
+    uid = claims['uid']
+    if not settings.google_api_key:
+        raise HTTPException(503, 'Chat is not configured yet. Please try again later.')
+
+    adk_session_id = await _ensure_session(uid, body.session_id)
+
+    async def event_generator():
+        agent = build_agent(uid=uid, session_id=adk_session_id)
+        runner = Runner(agent=agent, app_name=APP_NAME, session_service=_session_service)
+        user_content = genai_types.Content(
+            role='user',
+            parts=[genai_types.Part(text=body.message)],
+        )
+        try:
+            async for event in runner.run_async(
+                user_id=uid,
+                session_id=adk_session_id,
+                new_message=user_content,
+            ):
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if hasattr(part, 'text') and part.text:
+                            chunk = json.dumps({'text': part.text, 'done': event.is_final_response()})
+                            yield f'data: {chunk}\n\n'
+            yield f'data: {json.dumps({"text": "", "done": True})}\n\n'
+        except Exception as exc:
+            logger.exception('ADK stream failed')
+            error = json.dumps({'error': 'Noor could not respond right now. Please try again.', 'done': True})
+            yield f'data: {error}\n\n'
+
+    return StreamingResponse(event_generator(), media_type='text/event-stream',
+                             headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})

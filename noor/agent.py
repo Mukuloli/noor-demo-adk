@@ -1,9 +1,10 @@
-"""Google ADK dental booking agent — tools wired to Firestore DB."""
+"""Google ADK dental booking agent — tools wired to shared noor-database."""
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from google.adk.agents import LlmAgent
 from google.adk.tools import FunctionTool
+from noor_database import classify_appointments
 
 from .config import settings
 from . import db as firestore_db
@@ -25,6 +26,17 @@ Rules:
 - For cancellation: call get_appointments → prepare_cancellation → confirm_booking.
 - Never make up slots or IDs — only use values returned by tools.
 - Be brief and friendly.
+- Reply in plain text. Do not use Markdown, asterisks, bold markers, or headings.
+- Present booking details on separate lines (Name, Date, Time, Doctor) in the user's language. Say a booking is confirmed only after confirm_booking succeeds.
+
+Appointment status rules:
+- NEVER count past/back-date appointments as current or active appointments! When the user asks "mere appointments", "do I have any appointments?", only count and list UPCOMING appointments as their active appointments.
+- 'upcoming': future appointments. Show date and time normally (e.g. "Aapka 1 upcoming appointment hai: [Date] at [Time]").
+- 'delayed' or 'left': back-date appointments whose scheduled time has already passed.
+  - DO NOT say "Aapka appointment hai is date ko" for past dates.
+  - Tell the user: "Aapka [Date] wala appointment miss ho gaya tha."
+  - Proactively offer: "Kya aap naya appointment book karna chahte hain?"
+  - If there are NO upcoming appointments, say: "Aapka koi upcoming appointment nahi hai." Then if they had a past missed appointment, mention: "Aapka pichla appointment miss ho gaya tha, kya aap naya slot book karna chahte hain?"
 """
 
 # In-memory session state (hold_id, stage) per session_id
@@ -48,10 +60,8 @@ def build_agent(uid: str, session_id: str) -> LlmAgent:
         return {'ok': True, 'doctors': doctors, 'message': 'Available doctors.'}
 
     def get_appointments() -> dict:
-        """Get the patient's upcoming confirmed appointments."""
-        appts = firestore_db.get_appointments(uid)
-        return {'ok': True, 'appointments': appts,
-                'message': f'Found {len(appts)} upcoming appointment(s).'}
+        """Get the patient's confirmed appointments. Strictly separates upcoming (active) from missed/past (back-date)."""
+        return classify_appointments(firestore_db.get_appointments(uid))
 
     def check_availability(doctor_id: str, date: str) -> dict:
         """Check free slots for a doctor on a date (YYYY-MM-DD)."""
@@ -108,8 +118,9 @@ def build_agent(uid: str, session_id: str) -> LlmAgent:
             'stage': 'cancel_confirmation',
             'appointment_id': appointment_id,
         }
+        name = target.get('client_name', 'your appointment')
         return {'ok': True, 'appointment': target,
-                'message': f"Cancel appointment on {target['start'][:10]} for {target['client_name']}? (yes/no)"}
+                'message': f"Cancel appointment on {target['start'][:10]} for {name}? (yes/no)"}
 
     return LlmAgent(
         name='noor',

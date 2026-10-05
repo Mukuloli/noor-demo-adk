@@ -2,13 +2,13 @@
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic_settings import BaseSettings
+from noor_database.config import DatabaseSettings
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / '.env', override=True)
 
 
-class Settings(BaseSettings):
+class Settings(DatabaseSettings):
     google_api_key: str = ''
     gemini_model: str = 'gemini-3.8-flash'
     firebase_project_id: str = ''
@@ -27,4 +27,4 @@ class Settings(BaseSettings):
     model_config = {'env_file': BASE_DIR / '.env', 'extra': 'ignore'}
 
 
-settings = Settings()
+settings = Settings(data_root=BASE_DIR)

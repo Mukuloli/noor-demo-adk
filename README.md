@@ -2,6 +2,8 @@
 
 Standalone text-based booking agent using **Google ADK** + **Firestore** (same DB as the voice bot).
 
+The database implementation and schema live in the backend repository's shared `database/` folder. Clone `Mukuloli/livkit-audio-demo-hospital` into `../livkit/backend` before installing requirements; ADK installs `../livkit/backend/database`. `noor/db.py` adapts ADK tool calls to the common Firestore booking service. Voice and chat share transactional slot reservations.
+
 ## Folder Structure
 
 ```
