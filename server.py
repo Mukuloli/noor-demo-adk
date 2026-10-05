@@ -12,7 +12,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from google.adk.runners import Runner
+from google.adk.agents.run_config import RunConfig, StreamingMode
 from noor_database.adk_sessions import CachedAdkSessionService, agent_turn
+from noor_database.adk_streaming import text_chunks
 from google.genai import types as genai_types
 
 from noor.agent import build_agent
@@ -151,16 +153,13 @@ async def chat_stream(body: ChatRequest, authorization: str = Header(default='')
                 parts=[genai_types.Part(text=body.message)],
             )
             try:
-                async for event in runner.run_async(
+                async for chunk in text_chunks(runner.run_async(
                     user_id=uid,
                     session_id=adk_session_id,
                     new_message=user_content,
-                ):
-                    if event.content and event.content.parts:
-                        for part in event.content.parts:
-                            if hasattr(part, 'text') and part.text:
-                                chunk = json.dumps({'text': part.text, 'done': event.is_final_response()})
-                                yield f'data: {chunk}\n\n'
+                    run_config=RunConfig(streaming_mode=StreamingMode.SSE),
+                )):
+                    yield f'data: {json.dumps(chunk)}\n\n'
                 yield f'data: {json.dumps({"text": "", "done": True})}\n\n'
             except Exception as exc:
                 logger.exception('ADK stream failed')

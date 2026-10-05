@@ -16,7 +16,7 @@ class FakeRunner:
         self.app_name = app_name
         self.session_service = session_service
 
-    async def run_async(self, *, user_id, session_id, new_message):
+    async def run_async(self, *, user_id, session_id, new_message, run_config=None):
         session = await self.session_service.get_session(
             app_name=self.app_name, user_id=user_id, session_id=session_id)
         if session is None:
@@ -109,6 +109,20 @@ class ChatTests(unittest.TestCase):
                                         json={'session_id': 'stream-session', 'message': 'Hello'})
         self.assertIn('Noor could not respond right now.', response.text)
         self.assertNotIn('credential', response.text)
+
+    def test_stream_enables_model_streaming_and_does_not_repeat_answer(self):
+        async def streaming_runner(*args, run_config, **kwargs):
+            self.assertEqual(run_config.streaming_mode, server.StreamingMode.SSE)
+            for text, partial in [('Hello ', True), ('from Noor', True), ('Hello from Noor', False)]:
+                yield SimpleNamespace(
+                    partial=partial, is_final_response=lambda: not partial,
+                    content=SimpleNamespace(parts=[SimpleNamespace(text=text)]))
+        with patch.object(FakeRunner, 'run_async', streaming_runner):
+            response = self.client.post('/chat/stream', headers={'Authorization': 'Bearer alice'},
+                                        json={'session_id': 'stream-session', 'message': 'Hello'})
+        events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
+        self.assertEqual([e['text'] for e in events], ['Hello ', 'from Noor', ''])
+        self.assertEqual(events[-1]['done'], True)
 
 
 if __name__ == '__main__':
