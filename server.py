@@ -2,6 +2,7 @@
 import json
 import logging
 import uuid
+import asyncio
 
 from firebase_admin import auth as firebase_auth
 from noor_database.firestore.client import get_firebase_app
@@ -11,15 +12,16 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
+from noor_database.adk_sessions import CachedAdkSessionService, agent_turn
 from google.genai import types as genai_types
 
 from noor.agent import build_agent
 from noor.config import settings
+from noor.db import get_service, warm_user
 
 # ─── Firebase init ────────────────────────────────────────────────────────────
 # ─── ADK session store ────────────────────────────────────────────────────────
-_session_service = InMemorySessionService()
+_session_service = CachedAdkSessionService(settings, get_service)
 APP_NAME = 'noor-adk'
 logger = logging.getLogger(__name__)
 
@@ -80,6 +82,7 @@ def health():
         'model': settings.gemini_model,
         'booking_mode': settings.booking_mode,
         'service': 'noor-adk',
+        'cache': _session_service.cache.status(),
     }
 
 
@@ -91,34 +94,38 @@ async def chat(body: ChatRequest, authorization: str = Header(default='')):
     if not settings.google_api_key:
         raise HTTPException(503, 'Chat is not configured yet. Please try again later.')
 
-    adk_session_id = await _ensure_session(uid, body.session_id)
-    agent = build_agent(uid=uid, session_id=adk_session_id)
-    runner = Runner(agent=agent, app_name=APP_NAME, session_service=_session_service)
+    await asyncio.to_thread(warm_user, uid, claims.get('name', ''), claims.get('email', ''))
 
-    user_content = genai_types.Content(
-        role='user',
-        parts=[genai_types.Part(text=body.message)],
-    )
+    async with agent_turn(_session_service, app_name=APP_NAME, user_id=uid,
+                          session_id=f'{uid}-{body.session_id}'):
+        adk_session_id = await _ensure_session(uid, body.session_id)
+        agent = build_agent(uid=uid, session_id=adk_session_id)
+        runner = Runner(agent=agent, app_name=APP_NAME, session_service=_session_service)
 
-    reply_parts: list[str] = []
-    try:
-        async for event in runner.run_async(
-            user_id=uid,
-            session_id=adk_session_id,
-            new_message=user_content,
-        ):
-            if event.is_final_response() and event.content and event.content.parts:
-                for part in event.content.parts:
-                    if hasattr(part, 'text') and part.text:
-                        reply_parts.append(part.text)
-    except Exception as exc:
-        logger.exception('ADK chat failed')
-        raise HTTPException(503, 'Noor could not respond right now. Please try again.') from exc
+        user_content = genai_types.Content(
+            role='user',
+            parts=[genai_types.Part(text=body.message)],
+        )
 
-    return ChatResponse(
-        reply=' '.join(reply_parts).strip() or "I couldn't process that. Please try again.",
-        session_id=body.session_id,
-    )
+        reply_parts: list[str] = []
+        try:
+            async for event in runner.run_async(
+                user_id=uid,
+                session_id=adk_session_id,
+                new_message=user_content,
+            ):
+                if event.is_final_response() and event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if hasattr(part, 'text') and part.text:
+                            reply_parts.append(part.text)
+        except Exception as exc:
+            logger.exception('ADK chat failed')
+            raise HTTPException(503, 'Noor could not respond right now. Please try again.') from exc
+
+        return ChatResponse(
+            reply=' '.join(reply_parts).strip() or "I couldn't process that. Please try again.",
+            session_id=body.session_id,
+        )
 
 
 @app.post('/chat/stream')
@@ -129,31 +136,36 @@ async def chat_stream(body: ChatRequest, authorization: str = Header(default='')
     if not settings.google_api_key:
         raise HTTPException(503, 'Chat is not configured yet. Please try again later.')
 
-    adk_session_id = await _ensure_session(uid, body.session_id)
+    await asyncio.to_thread(warm_user, uid, claims.get('name', ''), claims.get('email', ''))
+
+    adk_session_id = f'{uid}-{body.session_id}'
 
     async def event_generator():
-        agent = build_agent(uid=uid, session_id=adk_session_id)
-        runner = Runner(agent=agent, app_name=APP_NAME, session_service=_session_service)
-        user_content = genai_types.Content(
-            role='user',
-            parts=[genai_types.Part(text=body.message)],
-        )
-        try:
-            async for event in runner.run_async(
-                user_id=uid,
-                session_id=adk_session_id,
-                new_message=user_content,
-            ):
-                if event.content and event.content.parts:
-                    for part in event.content.parts:
-                        if hasattr(part, 'text') and part.text:
-                            chunk = json.dumps({'text': part.text, 'done': event.is_final_response()})
-                            yield f'data: {chunk}\n\n'
-            yield f'data: {json.dumps({"text": "", "done": True})}\n\n'
-        except Exception as exc:
-            logger.exception('ADK stream failed')
-            error = json.dumps({'error': 'Noor could not respond right now. Please try again.', 'done': True})
-            yield f'data: {error}\n\n'
+        async with agent_turn(_session_service, app_name=APP_NAME, user_id=uid,
+                              session_id=adk_session_id):
+            await _ensure_session(uid, body.session_id)
+            agent = build_agent(uid=uid, session_id=adk_session_id)
+            runner = Runner(agent=agent, app_name=APP_NAME, session_service=_session_service)
+            user_content = genai_types.Content(
+                role='user',
+                parts=[genai_types.Part(text=body.message)],
+            )
+            try:
+                async for event in runner.run_async(
+                    user_id=uid,
+                    session_id=adk_session_id,
+                    new_message=user_content,
+                ):
+                    if event.content and event.content.parts:
+                        for part in event.content.parts:
+                            if hasattr(part, 'text') and part.text:
+                                chunk = json.dumps({'text': part.text, 'done': event.is_final_response()})
+                                yield f'data: {chunk}\n\n'
+                yield f'data: {json.dumps({"text": "", "done": True})}\n\n'
+            except Exception as exc:
+                logger.exception('ADK stream failed')
+                error = json.dumps({'error': 'Noor could not respond right now. Please try again.', 'done': True})
+                yield f'data: {error}\n\n'
 
     return StreamingResponse(event_generator(), media_type='text/event-stream',
                              headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})

@@ -4,6 +4,8 @@ from zoneinfo import ZoneInfo
 
 from noor_database import BookingError
 from noor_database.factory import create_appointment_service
+from noor_database.context import ConversationContextStore
+from noor_database.users import UserDataService
 
 from .config import settings
 
@@ -11,6 +13,14 @@ from .config import settings
 @lru_cache(maxsize=1)
 def get_service():
     return create_appointment_service(settings)
+
+
+def warm_user(uid, name='', email=''):
+    return UserDataService(get_service()).warm(uid, name=name, email=email)
+
+
+def get_context_store():
+    return ConversationContextStore(get_service(), 'noor-adk')
 
 
 def get_db():
@@ -42,6 +52,8 @@ def _booking_call(method, *args, **kwargs):
 def prepare_booking(uid: str, session_id: str, doctor_id: str, start: str,
                     client_name: str, phone_number: str, reason: str = 'Appointment',
                     client_email: str = '', appointment_id: str = '') -> dict:
+    if not client_email and get_service().settings.calendar_invitations_enabled:
+        client_email = UserDataService(get_service()).profile(uid).get('email', '')
     contact = ({'client_name': client_name, 'phone_number': phone_number, 'client_email': client_email}
                if getattr(get_service(), 'supports_contact_details', False) else {})
     return _booking_call('prepare', uid, session_id, doctor_id, start, reason,

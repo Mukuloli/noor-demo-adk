@@ -34,6 +34,7 @@ class ChatTests(unittest.TestCase):
             patch.object(server, '_session_service', InMemorySessionService()),
             patch.object(server, 'Runner', FakeRunner),
             patch.object(server, 'build_agent', return_value=object()),
+            patch.object(server, 'warm_user', return_value={'uid': 'test-patient'}),
             patch.object(server.settings, 'google_api_key', 'test-key'),
             patch.object(server, 'verify_token', side_effect=lambda token: {'uid': token.removeprefix('Bearer ')}),
         ):

@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 from google.adk.agents import LlmAgent
 from google.adk.tools import FunctionTool
 from noor_database import classify_appointments
+from noor_database.users import UserDataService
 
 from .config import settings
 from . import db as firestore_db
@@ -39,10 +40,6 @@ Appointment status rules:
   - If there are NO upcoming appointments, say: "Aapka koi upcoming appointment nahi hai." Then if they had a past missed appointment, mention: "Aapka pichla appointment miss ho gaya tha, kya aap naya slot book karna chahte hain?"
 """
 
-# In-memory session state (hold_id, stage) per session_id
-_session_state: dict[str, dict] = {}
-
-
 def build_agent(uid: str, session_id: str) -> LlmAgent:
     """Build a fresh LlmAgent with tools bound to this user/session."""
 
@@ -52,6 +49,7 @@ def build_agent(uid: str, session_id: str) -> LlmAgent:
         return {
             'clinic_time': datetime.now(tz).isoformat(),
             'timezone': settings.clinic_timezone,
+            'patient': UserDataService(firestore_db.get_service()).profile(uid),
         }
 
     def get_doctors() -> dict:
@@ -81,31 +79,32 @@ def build_agent(uid: str, session_id: str) -> LlmAgent:
             reason=reason, client_email=client_email,
         )
         if result.get('ok') and result.get('hold_id'):
-            _session_state[session_id] = {
+            firestore_db.get_context_store().save(uid, session_id, {
                 'stage': 'confirmation',
                 'hold_id': result['hold_id'],
-            }
+            })
         return result
 
     def confirm_booking() -> dict:
         """Confirm the pending booking or cancellation after patient says yes."""
-        state = _session_state.get(session_id, {})
+        state = firestore_db.get_context_store().get(uid, session_id)
         if state.get('stage') == 'confirmation':
             result = firestore_db.confirm_booking(uid, session_id, state['hold_id'])
             if result.get('ok'):
-                _session_state.pop(session_id, None)
+                firestore_db.get_context_store().save(uid, session_id, {})
             return result
         elif state.get('stage') == 'cancel_confirmation':
             result = firestore_db.cancel_appointment(uid, state['appointment_id'])
             if result.get('ok'):
-                _session_state.pop(session_id, None)
+                firestore_db.get_context_store().save(uid, session_id, {})
             return result
         return {'ok': False, 'message': 'Nothing pending to confirm. Please prepare a booking first.'}
 
     def release_hold() -> dict:
         """Release the held slot when patient says no."""
         result = firestore_db.release_hold(uid, session_id)
-        _session_state.pop(session_id, None)
+        if result.get('ok'):
+            firestore_db.get_context_store().save(uid, session_id, {})
         return result
 
     def prepare_cancellation(appointment_id: str) -> dict:
@@ -114,10 +113,10 @@ def build_agent(uid: str, session_id: str) -> LlmAgent:
         target = next((a for a in appts if a['id'] == appointment_id), None)
         if not target:
             return {'ok': False, 'message': 'Appointment not found.'}
-        _session_state[session_id] = {
+        firestore_db.get_context_store().save(uid, session_id, {
             'stage': 'cancel_confirmation',
             'appointment_id': appointment_id,
-        }
+        })
         name = target.get('client_name', 'your appointment')
         return {'ok': True, 'appointment': target,
                 'message': f"Cancel appointment on {target['start'][:10]} for {name}? (yes/no)"}

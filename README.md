@@ -53,6 +53,8 @@ Configure `GOOGLE_API_KEY`, `GEMINI_MODEL`, `FIREBASE_PROJECT_ID`, and `GOOGLE_A
 
 Environment files and credentials are excluded from Git. Settings load from this repository's `.env` regardless of the working directory.
 
+Set `REDIS_URL` to the same value as the backend to share cached profiles, bookings and session context. ADK history is cached during generation and saved to Firestore once per turn. See the backend's `database/schemas/redis.md` for Redis setup and `python scripts/check_cache.py` to verify your connection. Redis is optional; missing entries or outages fall back to Firestore.
+
 ## What It Can Do
 
 | Feature | Status |
