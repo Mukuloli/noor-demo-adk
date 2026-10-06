@@ -55,6 +55,20 @@ class ChatTests(unittest.TestCase):
             ('alice', 'alice-browser-session', 'Again')])
         self.assertEqual(len(server._session_service.sessions[server.APP_NAME]['alice']), 1)
 
+    def test_user_data_is_warmed_only_when_conversation_starts(self):
+        self.assertEqual(self.send().status_code, 200)
+        self.assertEqual(self.send(message='Again').status_code, 200)
+        server.warm_user.assert_called_once_with('alice', '', '')
+
+    def test_stream_warms_verified_identity_once(self):
+        with patch.object(server, 'verify_token', return_value={
+                'uid': 'alice', 'name': 'Alice', 'email': 'alice@example.com'}):
+            for message in ('Hello', 'Again'):
+                response = self.client.post('/chat/stream', headers={'Authorization': 'Bearer token'},
+                                            json={'session_id': 'stream-session', 'message': message})
+                self.assertEqual(response.status_code, 200)
+        server.warm_user.assert_called_once_with('alice', 'Alice', 'alice@example.com')
+
     def test_shared_browser_session_is_scoped_to_firebase_user(self):
         self.send('alice')
         self.send('bob')

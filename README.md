@@ -55,6 +55,10 @@ Environment files and credentials are excluded from Git. Settings load from this
 
 Set `REDIS_URL` to the same value as the backend to share cached profiles, bookings and session context. ADK history is cached during generation and saved to Firestore once per turn. See the backend's `database/schemas/redis.md` for Redis setup and `python scripts/check_cache.py` to verify your connection. Redis is optional; missing entries or outages fall back to Firestore.
 
+Authenticated chat prewarms profiles and bookings when a conversation is created. Later messages only fetch the data requested by tools through Redis, avoiding a repeated preload before every response.
+
+Terminal chat also warms the user's existing profile and bookings at startup and uses the shared Redis-first history service. Its displayed patient name does not overwrite the stored profile. Each completed or interrupted turn saves a durable Firestore history snapshot.
+
 ## What It Can Do
 
 | Feature | Status |

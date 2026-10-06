@@ -14,7 +14,7 @@ from noor import db
 class DatabaseAdapterTests(unittest.TestCase):
     def test_adk_adapter_uses_shared_firestore_service(self):
         with patch.object(firestore, 'transactional', transaction_wrapper):
-            config = DatabaseSettings(booking_mode='firestore', calendar_invitations_enabled=False,
+            config = DatabaseSettings(redis_url='', booking_mode='firestore', calendar_invitations_enabled=False,
                                       clinic_data_path='', doctor_id='primary-doctor')
             service = create_appointment_service(config, db=MemoryFirestore())
             with patch.object(db, 'get_service', return_value=service):

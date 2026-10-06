@@ -63,13 +63,14 @@ class ChatResponse(BaseModel):
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
-async def _ensure_session(uid: str, session_id: str):
+async def _ensure_session(uid: str, session_id: str, name: str = '', email: str = ''):
     """Ensure ADK session exists (carries conversation history)."""
     adk_session_id = f'{uid}-{session_id}'
     session = await _session_service.get_session(
         app_name=APP_NAME, user_id=uid, session_id=adk_session_id
     )
     if session is None:
+        await asyncio.to_thread(warm_user, uid, name, email)
         await _session_service.create_session(
             app_name=APP_NAME, user_id=uid, session_id=adk_session_id
         )
@@ -96,11 +97,10 @@ async def chat(body: ChatRequest, authorization: str = Header(default='')):
     if not settings.google_api_key:
         raise HTTPException(503, 'Chat is not configured yet. Please try again later.')
 
-    await asyncio.to_thread(warm_user, uid, claims.get('name', ''), claims.get('email', ''))
-
     async with agent_turn(_session_service, app_name=APP_NAME, user_id=uid,
                           session_id=f'{uid}-{body.session_id}'):
-        adk_session_id = await _ensure_session(uid, body.session_id)
+        adk_session_id = await _ensure_session(uid, body.session_id,
+                                             claims.get('name', ''), claims.get('email', ''))
         agent = build_agent(uid=uid, session_id=adk_session_id)
         runner = Runner(agent=agent, app_name=APP_NAME, session_service=_session_service)
 
@@ -138,14 +138,13 @@ async def chat_stream(body: ChatRequest, authorization: str = Header(default='')
     if not settings.google_api_key:
         raise HTTPException(503, 'Chat is not configured yet. Please try again later.')
 
-    await asyncio.to_thread(warm_user, uid, claims.get('name', ''), claims.get('email', ''))
-
     adk_session_id = f'{uid}-{body.session_id}'
 
     async def event_generator():
         async with agent_turn(_session_service, app_name=APP_NAME, user_id=uid,
                               session_id=adk_session_id):
-            await _ensure_session(uid, body.session_id)
+            await _ensure_session(uid, body.session_id,
+                                  claims.get('name', ''), claims.get('email', ''))
             agent = build_agent(uid=uid, session_id=adk_session_id)
             runner = Runner(agent=agent, app_name=APP_NAME, session_service=_session_service)
             user_content = genai_types.Content(

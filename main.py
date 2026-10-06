@@ -11,11 +11,12 @@ load_dotenv()
 os.environ.setdefault('GOOGLE_API_KEY', os.getenv('GOOGLE_API_KEY', ''))
 
 from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
+from noor_database.adk_sessions import CachedAdkSessionService, agent_turn
 from google.genai import types as genai_types
 
 from noor.agent import build_agent
 from noor.config import settings
+from noor.db import get_service, warm_user
 
 
 BANNER = """
@@ -29,10 +30,11 @@ Type 'quit' or 'exit' to leave.
 
 
 async def run_chat(uid: str, patient_name: str):
-    session_service = InMemorySessionService()
+    session_service = CachedAdkSessionService(settings, get_service)
     session_id = str(uuid.uuid4())
     app_name = 'noor-adk'
 
+    await asyncio.to_thread(warm_user, uid)
     await session_service.create_session(
         app_name=app_name, user_id=uid, session_id=session_id
     )
@@ -72,15 +74,17 @@ async def run_chat(uid: str, patient_name: str):
         print("Noor: ", end='', flush=True)
         reply_parts = []
         try:
-            async for event in runner.run_async(
-                user_id=uid,
-                session_id=session_id,
-                new_message=user_content,
-            ):
-                if event.is_final_response() and event.content and event.content.parts:
-                    for part in event.content.parts:
-                        if hasattr(part, 'text') and part.text:
-                            reply_parts.append(part.text)
+            async with agent_turn(session_service, app_name=app_name, user_id=uid,
+                                  session_id=session_id):
+                async for event in runner.run_async(
+                    user_id=uid,
+                    session_id=session_id,
+                    new_message=user_content,
+                ):
+                    if event.is_final_response() and event.content and event.content.parts:
+                        for part in event.content.parts:
+                            if hasattr(part, 'text') and part.text:
+                                reply_parts.append(part.text)
         except Exception as exc:
             print(f"\n[Error: {exc}]")
             continue
