@@ -111,7 +111,8 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('text/event-stream', response.headers['content-type'])
         events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
-        self.assertEqual(events[0], {'text': 'Hello from Noor', 'done': True})
+        self.assertEqual(events[0], {'text': 'Hello from Noor', 'done': False})
+        self.assertEqual(events[-1], {'text': '', 'done': True})
         self.assertEqual(FakeRunner.calls, [('alice', 'alice-stream-session', 'Hello')])
 
     def test_stream_reports_provider_errors(self):
@@ -123,6 +124,14 @@ class ChatTests(unittest.TestCase):
                                         json={'session_id': 'stream-session', 'message': 'Hello'})
         self.assertIn('Noor could not respond right now.', response.text)
         self.assertNotIn('credential', response.text)
+
+    def test_stream_reports_session_preparation_errors(self):
+        with patch.object(server, '_ensure_session', side_effect=RuntimeError('private setup details')):
+            with self.assertLogs(server.logger, level='ERROR'):
+                response = self.client.post('/chat/stream', headers={'Authorization': 'Bearer alice'},
+                                            json={'session_id': 'stream-session', 'message': 'Hello'})
+        self.assertIn('Noor could not respond right now.', response.text)
+        self.assertNotIn('private setup details', response.text)
 
     def test_stream_enables_model_streaming_and_does_not_repeat_answer(self):
         async def streaming_runner(*args, run_config, **kwargs):

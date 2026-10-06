@@ -29,7 +29,8 @@ class TerminalChatTests(unittest.TestCase):
                 def __init__(self, *, agent, app_name, session_service):
                     self.app_name, self.sessions = app_name, session_service
 
-                async def run_async(self, *, user_id, session_id, new_message):
+                async def run_async(self, *, user_id, session_id, new_message, run_config):
+                    self_test.assertEqual(run_config.streaming_mode, cli.StreamingMode.SSE)
                     session_ids.append(session_id)
                     session = await self.sessions.get_session(
                         app_name=self.app_name, user_id=user_id, session_id=session_id)
@@ -40,6 +41,7 @@ class TerminalChatTests(unittest.TestCase):
                     await self.sessions.append_event(session, event)
                     yield event
 
+            self_test = self
             with (patch.object(cli, 'settings', config),
                   patch.object(cli, 'get_service', return_value=service),
                   patch.object(cli, 'warm_user', warm),

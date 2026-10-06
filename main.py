@@ -11,7 +11,9 @@ load_dotenv()
 os.environ.setdefault('GOOGLE_API_KEY', os.getenv('GOOGLE_API_KEY', ''))
 
 from google.adk.runners import Runner
+from google.adk.agents.run_config import RunConfig, StreamingMode
 from noor_database.adk_sessions import CachedAdkSessionService, agent_turn
+from noor_database.adk_streaming import text_chunks
 from google.genai import types as genai_types
 
 from noor.agent import build_agent
@@ -72,25 +74,24 @@ async def run_chat(uid: str, patient_name: str):
         )
 
         print("Noor: ", end='', flush=True)
-        reply_parts = []
+        received_text = False
         try:
             async with agent_turn(session_service, app_name=app_name, user_id=uid,
                                   session_id=session_id):
-                async for event in runner.run_async(
+                async for chunk in text_chunks(runner.run_async(
                     user_id=uid,
                     session_id=session_id,
                     new_message=user_content,
-                ):
-                    if event.is_final_response() and event.content and event.content.parts:
-                        for part in event.content.parts:
-                            if hasattr(part, 'text') and part.text:
-                                reply_parts.append(part.text)
+                    run_config=RunConfig(streaming_mode=StreamingMode.SSE),
+                )):
+                    if chunk['text']:
+                        received_text = True
+                        print(chunk['text'], end='', flush=True)
         except Exception as exc:
             print(f"\n[Error: {exc}]")
             continue
 
-        reply = ' '.join(reply_parts).strip()
-        print(reply if reply else "(no response)")
+        print('' if received_text else '(no response)')
         print()
 
 

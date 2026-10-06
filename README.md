@@ -59,6 +59,8 @@ Authenticated chat prewarms profiles and bookings when a conversation is created
 
 Terminal chat also warms the user's existing profile and bookings at startup and uses the shared Redis-first history service. Its displayed patient name does not overwrite the stored profile. Each completed or interrupted turn saves a durable Firestore history snapshot.
 
+Text chat uses low Gemini thinking, supplies clinic time directly, and calls database tools only when needed. Blocking tools run in threads; terminal and browser replies stream as generated. History is loaded once per turn and published to Redis once after the durable save. The server logs authentication, preparation, and generation timings without message content. Run `python scripts/check_chat_latency.py --compare` to measure a generic greeting with default versus low thinking; this uses Gemini but no patient data or live database.
+
 ## What It Can Do
 
 | Feature | Status |

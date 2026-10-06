@@ -6,6 +6,7 @@ from google.adk.agents import LlmAgent
 from google.adk.tools import FunctionTool
 from noor_database import classify_appointments
 from noor_database.users import UserDataService
+from noor_database.adk_latency import async_tool, generation_config
 
 from .config import settings
 from . import db as firestore_db
@@ -15,8 +16,9 @@ Help the user book, view, reschedule or cancel appointments via text chat.
 Speak in the user's language — English, Hindi, or Hinglish is fine.
 
 Rules:
-- Call get_context first to know today's date/time.
-- Call get_doctors to know available doctors.
+- Use the current clinic date/time supplied below. Call get_context only when you need the patient's profile.
+- For greetings or simple questions, reply directly without calling tools.
+- Call get_doctors when you need available doctors for a booking or availability request.
 - Call check_availability with doctor_id and date before suggesting any slot.
 - For booking: ask for client_name and phone_number. Do NOT ask for email.
 - Call prepare_booking with name, phone, doctor_id and a slot's 'start' value.
@@ -124,15 +126,17 @@ def build_agent(uid: str, session_id: str) -> LlmAgent:
     return LlmAgent(
         name='noor',
         model=settings.gemini_model,
-        instruction=INSTRUCTIONS,
+        instruction=INSTRUCTIONS + '\nCurrent clinic time: ' + datetime.now(ZoneInfo(settings.clinic_timezone)).isoformat()
+                    + '\nClinic timezone: ' + settings.clinic_timezone,
+        generate_content_config=generation_config(settings.gemini_model),
         tools=[
-            FunctionTool(get_context),
-            FunctionTool(get_doctors),
-            FunctionTool(get_appointments),
-            FunctionTool(check_availability),
-            FunctionTool(prepare_booking),
-            FunctionTool(confirm_booking),
-            FunctionTool(release_hold),
-            FunctionTool(prepare_cancellation),
+            FunctionTool(async_tool(get_context)),
+            FunctionTool(async_tool(get_doctors)),
+            FunctionTool(async_tool(get_appointments)),
+            FunctionTool(async_tool(check_availability)),
+            FunctionTool(async_tool(prepare_booking)),
+            FunctionTool(async_tool(confirm_booking)),
+            FunctionTool(async_tool(release_hold)),
+            FunctionTool(async_tool(prepare_cancellation)),
         ],
     )
