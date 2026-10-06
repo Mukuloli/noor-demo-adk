@@ -7,22 +7,27 @@ from google.adk.tools import FunctionTool
 from noor_database import classify_appointments
 from noor_database.users import UserDataService
 from noor_database.adk_latency import async_tool, generation_config
+from noor_database.hospital import hospital_info
 
 from .config import settings
 from . import db as firestore_db
 
 INSTRUCTIONS = """You are Noor, a friendly dental appointment assistant.
-Help the user book, view, reschedule or cancel appointments via text chat.
+Help the user book, view, reschedule or cancel appointments, and answer hospital information questions.
 Speak in the user's language — English, Hindi, or Hinglish is fine.
 
 Rules:
 - Use the current clinic date/time supplied below. Call get_context only when you need the patient's profile.
-- For greetings or simple questions, reply directly without calling tools.
+- For greetings, reply directly without calling tools. For hospital facts, use get_hospital_info.
 - Call get_doctors when you need available doctors for a booking or availability request.
 - Call check_availability with doctor_id and date before suggesting any slot.
-- For booking: ask for client_name and phone_number. Do NOT ask for email.
+- For booking, call get_context to check patient.booking_contact before asking for contact details. Reuse saved client_name and phone_number. Ask only for missing details on a first booking; never ask again on repeat bookings or rescheduling. Do NOT ask for email.
+- For rescheduling, call get_appointments, select the user's appointment (clarify which only if multiple), reuse its contact details and pass appointment_id to prepare_booking.
+- Ask only for a missing date or time. Never re-ask a date/time the user already provided. Check availability for the user's requested time; if unavailable, offer alternatives and let the user choose.
+- For repeat bookings or rescheduling with saved contact and a date/time explicitly requested or selected by the user, call prepare_booking with confirm_requested_slot=true to book directly. No extra confirmation question is needed. Never use this flag for an unselected suggested slot, first booking, changed contact, or cancellation.
+- Use get_hospital_info for hospital services, hours and location. Answer only from configured information; refer missing facts to reception.
 - Call prepare_booking with name, phone, doctor_id and a slot's 'start' value.
-- After prepare_booking succeeds: read back name, phone, date, time. Ask for confirmation.
+- If prepare_booking returns requires_confirmation=false, the booking is already saved: report its date/time without asking contact details or confirmation. Otherwise read back name, phone, date/time and ask for confirmation.
 - Call confirm_booking ONLY after user says yes/haan/confirm/okay.
 - Call release_hold if user says no/nahi/cancel.
 - For viewing appointments: call get_appointments.
@@ -30,6 +35,7 @@ Rules:
 - Never make up slots or IDs — only use values returned by tools.
 - Be brief and friendly.
 - Reply in plain text. Do not use Markdown, asterisks, bold markers, or headings.
+- Never show appointment IDs, hold IDs or other technical identifiers to the patient. Describe appointments using their date, time and service.
 - Present booking details on separate lines (Name, Date, Time, Doctor) in the user's language. Say a booking is confirmed only after confirm_booking succeeds.
 
 Appointment status rules:
@@ -51,13 +57,17 @@ def build_agent(uid: str, session_id: str) -> LlmAgent:
         return {
             'clinic_time': datetime.now(tz).isoformat(),
             'timezone': settings.clinic_timezone,
-            'patient': UserDataService(firestore_db.get_service()).profile(uid),
+            'patient': UserDataService(firestore_db.get_service()).profile_for_booking(uid),
         }
 
     def get_doctors() -> dict:
         """List available clinic doctors."""
         doctors = firestore_db.get_doctors()
         return {'ok': True, 'doctors': doctors, 'message': 'Available doctors.'}
+
+    def get_hospital_info() -> dict:
+        """Get configured hospital services, opening hours and locations."""
+        return hospital_info(firestore_db.get_service())
 
     def get_appointments() -> dict:
         """Get the patient's confirmed appointments. Strictly separates upcoming (active) from missed/past (back-date)."""
@@ -71,20 +81,24 @@ def build_agent(uid: str, session_id: str) -> LlmAgent:
         return {'ok': True, 'slots': slots,
                 'message': f'Found {len(slots)} available slot(s).'}
 
-    def prepare_booking(doctor_id: str, start: str, client_name: str,
-                        phone_number: str, reason: str = 'Appointment',
-                        client_email: str = '') -> dict:
-        """Hold a slot. Returns a summary for the patient to confirm."""
+    def prepare_booking(doctor_id: str, start: str, client_name: str = '',
+                        phone_number: str = '', reason: str = 'Appointment',
+                        client_email: str = '', appointment_id: str = '',
+                        confirm_requested_slot: bool = False) -> dict:
+        """Reuse saved contact. Confirm directly only for returning users requesting this exact slot; appointment_id reschedules."""
         result = firestore_db.prepare_booking(
             uid=uid, session_id=session_id, doctor_id=doctor_id,
             start=start, client_name=client_name, phone_number=phone_number,
-            reason=reason, client_email=client_email,
+            reason=reason, client_email=client_email, appointment_id=appointment_id,
+            confirm_requested_slot=confirm_requested_slot,
         )
         if result.get('ok') and result.get('hold_id'):
             firestore_db.get_context_store().save(uid, session_id, {
                 'stage': 'confirmation',
                 'hold_id': result['hold_id'],
             })
+        elif result.get('ok') and result.get('requires_confirmation') is False:
+            firestore_db.get_context_store().save(uid, session_id, {})
         return result
 
     def confirm_booking() -> dict:
@@ -132,6 +146,7 @@ def build_agent(uid: str, session_id: str) -> LlmAgent:
         tools=[
             FunctionTool(async_tool(get_context)),
             FunctionTool(async_tool(get_doctors)),
+            FunctionTool(async_tool(get_hospital_info)),
             FunctionTool(async_tool(get_appointments)),
             FunctionTool(async_tool(check_availability)),
             FunctionTool(async_tool(prepare_booking)),

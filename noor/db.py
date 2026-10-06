@@ -50,14 +50,15 @@ def _booking_call(method, *args, **kwargs):
 
 
 def prepare_booking(uid: str, session_id: str, doctor_id: str, start: str,
-                    client_name: str, phone_number: str, reason: str = 'Appointment',
-                    client_email: str = '', appointment_id: str = '') -> dict:
+                    client_name: str = '', phone_number: str = '', reason: str = 'Appointment',
+                    client_email: str = '', appointment_id: str = '',
+                    confirm_requested_slot: bool = False) -> dict:
     if not client_email and get_service().settings.calendar_invitations_enabled:
         client_email = UserDataService(get_service()).profile(uid).get('email', '')
     contact = ({'client_name': client_name, 'phone_number': phone_number, 'client_email': client_email}
                if getattr(get_service(), 'supports_contact_details', False) else {})
     return _booking_call('prepare', uid, session_id, doctor_id, start, reason,
-                         appointment_id or None, **contact)
+                         appointment_id or None, confirm_requested_slot=confirm_requested_slot, **contact)
 
 
 def confirm_booking(uid: str, session_id: str, hold_id: str) -> dict:

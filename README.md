@@ -2,6 +2,8 @@
 
 Standalone text-based booking agent using **Google ADK** + **Firestore** (same DB as the voice bot).
 
+Confirmed bookings save a booking name and phone separately from Google identity. Returning users and rescheduling requests reuse that contact: only a missing date/time is asked, and an explicitly selected available slot can be confirmed directly. First bookings, changed contact and cancellations still require confirmation. Hospital services, hours and locations come from the configured clinic; missing information is referred to reception. Patient-facing replies and confirmation messages use names and appointment times instead of internal IDs.
+
 The database implementation and schema live in the backend repository's shared `database/` folder. Clone `Mukuloli/livkit-audio-demo-hospital` into `../livkit/backend` before installing requirements; ADK installs `../livkit/backend/database`. `noor/db.py` adapts ADK tool calls to the common Firestore booking service. Voice and chat share transactional slot reservations.
 
 ## Folder Structure
