@@ -2,6 +2,7 @@ import asyncio
 import unittest
 from datetime import datetime, timedelta
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from firebase_admin import firestore
 
@@ -34,11 +35,28 @@ class RepeatBookingToolTests(unittest.TestCase):
                 moved = asyncio.run(tools['prepare_booking'].run_async(args={
                     'doctor_id': config.doctor_id, 'start': slots[1]['start'],
                     'appointment_id': booked['appointment_id'], 'confirm_requested_slot': True,
-                }, tool_context=None))
-                self.assertFalse(moved['requires_confirmation'])
+                    'change_reason': 'Work meeting',
+                }, tool_context=SimpleNamespace(invocation_id='request')))
+                self.assertTrue(moved['requires_confirmation'])
+                self.assertEqual(service.appointments('alice')['appointments'][0]['start'], slots[0]['start'])
+                blocked = asyncio.run(tools['confirm_booking'].run_async(args={}, tool_context=SimpleNamespace(invocation_id='request')))
+                self.assertEqual(blocked['code'], 'CONFIRMATION_REQUIRED')
+                moved = asyncio.run(tools['confirm_booking'].run_async(args={}, tool_context=SimpleNamespace(invocation_id='confirmed')))
                 self.assertTrue(moved['rescheduled'])
                 self.assertEqual(moved['appointment_id'], booked['appointment_id'])
                 self.assertEqual(db.get_context_store().get('alice', 'second'), {})
                 info = asyncio.run(tools['get_hospital_info'].run_async(args={}, tool_context=None))
                 self.assertIn('checkup', info['services'])
                 self.assertFalse(info['locations'])
+                missing = asyncio.run(tools['prepare_cancellation'].run_async(args={
+                    'appointment_id': booked['appointment_id']}, tool_context=None))
+                self.assertEqual(missing['code'], 'CHANGE_REASON_REQUIRED')
+                cancelled = asyncio.run(tools['prepare_cancellation'].run_async(args={
+                    'appointment_id': booked['appointment_id'], 'change_reason': 'Travelling'},
+                    tool_context=SimpleNamespace(invocation_id='cancel')))
+                self.assertTrue(cancelled['requires_confirmation'])
+                blocked = asyncio.run(tools['confirm_booking'].run_async(args={}, tool_context=SimpleNamespace(invocation_id='cancel')))
+                self.assertEqual(blocked['code'], 'CONFIRMATION_REQUIRED')
+                confirmed = asyncio.run(tools['confirm_booking'].run_async(args={}, tool_context=SimpleNamespace(invocation_id='cancel-confirmed')))
+                self.assertTrue(confirmed['ok'])
+                self.assertFalse(service.appointments('alice')['appointments'])

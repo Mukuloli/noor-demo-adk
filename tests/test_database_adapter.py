@@ -29,5 +29,5 @@ class DatabaseAdapterTests(unittest.TestCase):
                 confirmed = db.confirm_booking('patient', 'chat', held['hold_id'])
                 self.assertEqual(db.get_appointments('patient')[0]['id'], confirmed['appointment_id'])
                 self.assertEqual(db.get_appointments('other-patient'), [])
-                self.assertTrue(db.cancel_appointment('patient', confirmed['appointment_id'])['ok'])
+                self.assertTrue(db.cancel_appointment('patient', confirmed['appointment_id'], change_reason='Schedule conflict')['ok'])
                 self.assertEqual(db.get_appointments('patient'), [])

@@ -3,11 +3,13 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from google.adk.agents import LlmAgent
-from google.adk.tools import FunctionTool
+from google.adk.tools import FunctionTool, ToolContext
 from noor_database import classify_appointments
 from noor_database.users import UserDataService
 from noor_database.adk_latency import async_tool, generation_config
 from noor_database.hospital import hospital_info
+from noor_database.changes import require_change_reason, require_later_confirmation
+from noor_database.errors import BookingError
 
 from .config import settings
 from . import db as firestore_db
@@ -24,7 +26,7 @@ Rules:
 - For booking, call get_context to check patient.booking_contact before asking for contact details. Reuse saved client_name and phone_number. Ask only for missing details on a first booking; never ask again on repeat bookings or rescheduling. Do NOT ask for email.
 - For rescheduling, call get_appointments, select the user's appointment (clarify which only if multiple), reuse its contact details and pass appointment_id to prepare_booking.
 - Ask only for a missing date or time. Never re-ask a date/time the user already provided. Check availability for the user's requested time; if unavailable, offer alternatives and let the user choose.
-- For repeat bookings or rescheduling with saved contact and a date/time explicitly requested or selected by the user, call prepare_booking with confirm_requested_slot=true to book directly. No extra confirmation question is needed. Never use this flag for an unselected suggested slot, first booking, changed contact, or cancellation.
+- For new repeat bookings with saved contact and a date/time explicitly requested or selected by the user, call prepare_booking with confirm_requested_slot=true to book directly. No extra confirmation question is needed. Never use this flag for an unselected suggested slot, first booking, changed contact, or cancellation.
 - Use get_hospital_info for hospital services, hours and location. Answer only from configured information; refer missing facts to reception.
 - Call prepare_booking with name, phone, doctor_id and a slot's 'start' value.
 - If prepare_booking returns requires_confirmation=false, the booking is already saved: report its date/time without asking contact details or confirmation. Otherwise read back name, phone, date/time and ask for confirmation.
@@ -37,6 +39,9 @@ Rules:
 - Reply in plain text. Do not use Markdown, asterisks, bold markers, or headings.
 - Never show appointment IDs, hold IDs or other technical identifiers to the patient. Describe appointments using their date, time and service.
 - Present booking details on separate lines (Name, Date, Time, Doctor) in the user's language. Say a booking is confirmed only after confirm_booking succeeds.
+
+
+For BOTH cancellation and rescheduling: ask for a reason unless the caller already supplied it. Pass that reason as change_reason, separate from the appointment service/reason. Never invent it. Prepare the change, read back the appointment, reason and (for rescheduling) old/new date and time, then WAIT for explicit yes/confirm in a later turn before calling confirm_action or confirm_booking. Reuse saved name and phone without asking again. A requested change, date/time, or reason is not itself confirmation. Cancellation/rescheduling emails are requested only after the change succeeds. Claim a notification only when customer_notified=true or customer_invited=true. Explain a failed notification without claiming that the successful change failed.
 
 Appointment status rules:
 - NEVER count past/back-date appointments as current or active appointments! When the user asks "mere appointments", "do I have any appointments?", only count and list UPCOMING appointments as their active appointments.
@@ -84,33 +89,39 @@ def build_agent(uid: str, session_id: str) -> LlmAgent:
     def prepare_booking(doctor_id: str, start: str, client_name: str = '',
                         phone_number: str = '', reason: str = 'Appointment',
                         client_email: str = '', appointment_id: str = '',
-                        confirm_requested_slot: bool = False) -> dict:
+                        confirm_requested_slot: bool = False, change_reason: str = '', tool_context: ToolContext = None) -> dict:
         """Reuse saved contact. Confirm directly only for returning users requesting this exact slot; appointment_id reschedules."""
         result = firestore_db.prepare_booking(
             uid=uid, session_id=session_id, doctor_id=doctor_id,
             start=start, client_name=client_name, phone_number=phone_number,
             reason=reason, client_email=client_email, appointment_id=appointment_id,
             confirm_requested_slot=confirm_requested_slot,
+            change_reason=change_reason,
         )
         if result.get('ok') and result.get('hold_id'):
             firestore_db.get_context_store().save(uid, session_id, {
                 'stage': 'confirmation',
                 'hold_id': result['hold_id'],
+                'confirmation_invocation_id': tool_context.invocation_id if tool_context else '',
             })
         elif result.get('ok') and result.get('requires_confirmation') is False:
             firestore_db.get_context_store().save(uid, session_id, {})
         return result
 
-    def confirm_booking() -> dict:
+    def confirm_booking(tool_context: ToolContext = None) -> dict:
         """Confirm the pending booking or cancellation after patient says yes."""
         state = firestore_db.get_context_store().get(uid, session_id)
+        try:
+            require_later_confirmation(state, tool_context.invocation_id if tool_context else '')
+        except BookingError as exc:
+            return {'ok': False, 'code': exc.code, 'message': exc.message}
         if state.get('stage') == 'confirmation':
             result = firestore_db.confirm_booking(uid, session_id, state['hold_id'])
             if result.get('ok'):
                 firestore_db.get_context_store().save(uid, session_id, {})
             return result
         elif state.get('stage') == 'cancel_confirmation':
-            result = firestore_db.cancel_appointment(uid, state['appointment_id'])
+            result = firestore_db.cancel_appointment(uid, state['appointment_id'], change_reason=state.get('change_reason', ''))
             if result.get('ok'):
                 firestore_db.get_context_store().save(uid, session_id, {})
             return result
@@ -123,19 +134,26 @@ def build_agent(uid: str, session_id: str) -> LlmAgent:
             firestore_db.get_context_store().save(uid, session_id, {})
         return result
 
-    def prepare_cancellation(appointment_id: str) -> dict:
+    def prepare_cancellation(appointment_id: str, change_reason: str = '', tool_context: ToolContext = None) -> dict:
         """Prepare cancellation of a given appointment by ID."""
         appts = firestore_db.get_appointments(uid)
         target = next((a for a in appts if a['id'] == appointment_id), None)
         if not target:
             return {'ok': False, 'message': 'Appointment not found.'}
+        try:
+            explanation = require_change_reason(change_reason, 'cancelling')
+        except BookingError as exc:
+            return {'ok': False, 'code': exc.code, 'message': exc.message, 'retryable': True}
         firestore_db.get_context_store().save(uid, session_id, {
             'stage': 'cancel_confirmation',
             'appointment_id': appointment_id,
+            'change_reason': explanation,
+            'confirmation_invocation_id': tool_context.invocation_id if tool_context else '',
         })
         name = target.get('client_name', 'your appointment')
         return {'ok': True, 'appointment': target,
-                'message': f"Cancel appointment on {target['start'][:10]} for {name}? (yes/no)"}
+                'change_reason': explanation, 'requires_confirmation': True,
+                'message': f"Cancel appointment on {target['start'][:10]} for {name}? Reason: {explanation}. Please confirm or decline."}
 
     return LlmAgent(
         name='noor',
