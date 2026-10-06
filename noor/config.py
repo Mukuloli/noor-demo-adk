@@ -10,7 +10,7 @@ load_dotenv(BASE_DIR / '.env', override=True)
 
 class Settings(DatabaseSettings):
     google_api_key: str = ''
-    gemini_model: str = 'gemini-3.8-flash'
+    gemini_model: str = 'gemini-3.1-flash-lite'
     firebase_project_id: str = ''
     google_application_credentials: str = ''
     firestore_database_id: str = '(default)'

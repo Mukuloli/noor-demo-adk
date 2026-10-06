@@ -57,11 +57,13 @@ Environment files and credentials are excluded from Git. Settings load from this
 
 Set `REDIS_URL` to the same value as the backend to share cached profiles, bookings and session context. ADK history is cached during generation and saved to Firestore once per turn. See the backend's `database/schemas/redis.md` for Redis setup and `python scripts/check_cache.py` to verify your connection. Redis is optional; missing entries or outages fall back to Firestore.
 
-Authenticated chat loads the verified profile when a conversation is created. Appointment lists are fetched only when a tool needs them, so a greeting does not wait for a bookings query. New conversation history is saved once after the turn rather than writing an empty snapshot before generation. Browser replies use SSE chunks and completion events, with proxy buffering disabled.
+Text chat defaults to `gemini-3.1-flash-lite`. Verified profile preparation runs alongside generation for a new conversation; profile-dependent booking tools wait for it before using patient data. Exact greetings such as "hi" stream immediately without a model or database read, then join profile preparation and save their conversation history before completion. Requests containing appointment actions always reach the booking agent. Appointment lists are fetched only when needed. Configured public hospital facts and doctor details are supplied directly to the agent, avoiding an extra tool/model round trip. Transport connections are reused across turns while patient tools and sessions remain separate. Browser replies use SSE chunks and completion events, with proxy buffering disabled.
 
 Terminal chat also warms the user's existing profile at startup and uses the shared Redis-first history service. Its displayed patient name does not overwrite the stored profile. Each completed or interrupted turn saves a durable Firestore history snapshot.
 
 Text chat uses low Gemini thinking, supplies clinic time directly, and calls database tools only when needed. Blocking tools run in threads; terminal and browser replies stream as generated. History is loaded once per turn and published to Redis once after the durable save. The server logs authentication, preparation, and generation timings without message content. Run `python scripts/check_chat_latency.py --compare` to measure a generic greeting with default versus low thinking; this uses Gemini but no patient data or live database.
+
+Compare models with `python scripts/check_chat_latency.py --models gemini-3.8-flash gemini-3.1-flash-lite --runs 2 --hospital`. Run `python scripts/check_booking_model.py --models gemini-3.1-flash-lite` to exercise saved-contact repeat booking and the reason/confirmation steps for cancellation and rescheduling using synthetic records in memory. Neither diagnostic accesses patient data or sends emails.
 
 ## What It Can Do
 
