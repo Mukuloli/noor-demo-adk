@@ -16,7 +16,7 @@ def get_service():
 
 
 def warm_user(uid, name='', email=''):
-    return UserDataService(get_service()).warm(uid, name=name, email=email)
+    return UserDataService(get_service()).warm(uid, name=name, email=email, preload_appointments=False)
 
 
 def get_context_store():

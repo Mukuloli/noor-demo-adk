@@ -57,9 +57,9 @@ Environment files and credentials are excluded from Git. Settings load from this
 
 Set `REDIS_URL` to the same value as the backend to share cached profiles, bookings and session context. ADK history is cached during generation and saved to Firestore once per turn. See the backend's `database/schemas/redis.md` for Redis setup and `python scripts/check_cache.py` to verify your connection. Redis is optional; missing entries or outages fall back to Firestore.
 
-Authenticated chat prewarms profiles and bookings when a conversation is created. Later messages only fetch the data requested by tools through Redis, avoiding a repeated preload before every response.
+Authenticated chat loads the verified profile when a conversation is created. Appointment lists are fetched only when a tool needs them, so a greeting does not wait for a bookings query. New conversation history is saved once after the turn rather than writing an empty snapshot before generation. Browser replies use SSE chunks and completion events, with proxy buffering disabled.
 
-Terminal chat also warms the user's existing profile and bookings at startup and uses the shared Redis-first history service. Its displayed patient name does not overwrite the stored profile. Each completed or interrupted turn saves a durable Firestore history snapshot.
+Terminal chat also warms the user's existing profile at startup and uses the shared Redis-first history service. Its displayed patient name does not overwrite the stored profile. Each completed or interrupted turn saves a durable Firestore history snapshot.
 
 Text chat uses low Gemini thinking, supplies clinic time directly, and calls database tools only when needed. Blocking tools run in threads; terminal and browser replies stream as generated. History is loaded once per turn and published to Redis once after the durable save. The server logs authentication, preparation, and generation timings without message content. Run `python scripts/check_chat_latency.py --compare` to measure a generic greeting with default versus low thinking; this uses Gemini but no patient data or live database.
 
